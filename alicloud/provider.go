@@ -1,6 +1,7 @@
 package alicloud
 
 import (
+	"github.com/myklst/terraform-provider-st-alicloud/utils"
 	"context"
 	"fmt"
 	"os"
@@ -26,6 +27,7 @@ import (
 	alicloudEssClient "github.com/alibabacloud-go/ess-20220222/v2/client"
 	alicloudFoasconsoleClient "github.com/alibabacloud-go/foasconsole-20211028/v2/client"
 	alicloudImsClient "github.com/alibabacloud-go/ims-20190815/v4/client"
+	alicloudKvstoreClient "github.com/alibabacloud-go/r-kvstore-20150101/v7/client"
 	alicloudRamClient "github.com/alibabacloud-go/ram-20150501/v2/client"
 	alicloudServicemeshClient "github.com/alibabacloud-go/servicemesh-20200111/v4/client"
 	alicloudSlbClient "github.com/alibabacloud-go/slb-20140515/v4/client"
@@ -41,7 +43,7 @@ type alicloudClients struct {
 	antiddosClient    *alicloudAntiddosClient.Client
 	slbClient         *alicloudSlbClient.Client
 	dnsClient         *alicloudDnsClient.Client
-	customEcdClient   *EcdClient
+	customEcdClient   *utils.EcdClient
 	ecdClient         *alicloudEcdClient.Client
 	ramClient         *alicloudRamClient.Client
 	cmsClient         *alicloudCmsClient.Client
@@ -52,6 +54,7 @@ type alicloudClients struct {
 	essClient         *alicloudEssClient.Client
 	servicemeshClient *alicloudServicemeshClient.Client
 	imsClient         *alicloudImsClient.Client
+	kvstoreClient     *alicloudKvstoreClient.Client
 	ververicaClient   *alicloudVvpClient.Client
 	foasconsoleClient *alicloudFoasconsoleClient.Client
 }
@@ -415,6 +418,20 @@ func (p *alicloudProvider) Configure(ctx context.Context, req provider.Configure
 		return
 	}
 
+	// AliCloud R-Kvstore (Redis) Client
+	kvstoreClientConfig := clientCredentialsConfig
+	kvstoreClientConfig.Endpoint = tea.String(fmt.Sprintf("r-kvstore.%s.aliyuncs.com", region))
+	kvstoreClient, err := alicloudKvstoreClient.NewClient(kvstoreClientConfig)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Unable to Create AliCloud R-Kvstore API Client",
+			"An unexpected error occurred when creating the AliCloud R-Kvstore API client. "+
+				"If the error is not clear, please contact the provider developers.\n\n"+
+				"AliCloud R-Kvstore Client Error: "+err.Error(),
+		)
+		return
+	}
+
 	// AliCloud ECD SDK Client
 	ecdClientConfig := &alicloudOpenapiClient.Config{
 		RegionId:        &region,
@@ -432,7 +449,7 @@ func (p *alicloudProvider) Configure(ctx context.Context, req provider.Configure
 	}
 
 	// AliCloud ECD Custom RPC Client (used by simple office site resource)
-	customEcdClient := NewEcdClient(
+	customEcdClient := utils.NewEcdClient(
 		region,
 		accessKey,
 		secretKey,
@@ -484,6 +501,7 @@ func (p *alicloudProvider) Configure(ctx context.Context, req provider.Configure
 		essClient:         essClient,
 		servicemeshClient: servicemeshClient,
 		imsClient:         imsClient,
+		kvstoreClient:     kvstoreClient,
 		ecdClient:         ecdClient,
 		customEcdClient:   customEcdClient,
 		ververicaClient:   ververicaClient,
@@ -531,5 +549,7 @@ func (p *alicloudProvider) Resources(_ context.Context) []func() resource.Resour
 		NewVervericaMemberResource,
 		NewFoasconsoleNamespaceSpecResource,
 		NewSlbListenerWhitelistAclAttachmentResource,
+		NewKvstoreElasticBurstBandwidthResource,
+		NewKvstoreIndividualShardBandwidthResource,
 	}
 }
