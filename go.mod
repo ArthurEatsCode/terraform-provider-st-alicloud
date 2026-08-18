@@ -1,8 +1,6 @@
 module github.com/myklst/terraform-provider-st-alicloud
 
-go 1.24.0
-
-toolchain go1.24.10
+go 1.26.4
 
 require (
 	github.com/alibabacloud-go/alidns-20150109/v4 v4.0.1

@@ -188,7 +188,12 @@ func ExtractOfficeSiteIdByVpc(resp map[string]any, vpcId string) (string, bool) 
 	}
 
 	for _, site := range sites {
-		if strings.EqualFold(site["VpcId"].(string), vpcId) {
+		siteVpcId, ok := site["VpcId"].(string)
+		if !ok {
+			// Not every office site type carries a VpcId, skip rather than panic.
+			continue
+		}
+		if strings.EqualFold(siteVpcId, vpcId) {
 			if id, ok := site["OfficeSiteId"].(string); ok {
 				return id, true
 			}
