@@ -1,7 +1,6 @@
 package alicloud
 
 import (
-	"github.com/myklst/terraform-provider-st-alicloud/utils"
 	"context"
 	"fmt"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/myklst/terraform-provider-st-alicloud/utils"
 )
 
 var (
@@ -86,10 +86,16 @@ func (r *ecdSimpleOfficeSiteResource) Schema(_ context.Context, _ resource.Schem
 			"cen_owner_id": schema.StringAttribute{
 				Optional: true,
 			},
+			// Optional + Computed: when vpc_type is "customized", AliCloud takes the
+			// CIDR from the VPC and sends it back, so there is no value the user could
+			// set that would match. Leaving it out of the config keeps whatever the API
+			// returns, instead of replacing the office site on every plan.
 			"cidr_block": schema.StringAttribute{
-				Required: true,
+				Optional: true,
+				Computed: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"desktop_access_type": schema.StringAttribute{
@@ -153,10 +159,16 @@ func (r *ecdSimpleOfficeSiteResource) Schema(_ context.Context, _ resource.Schem
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			// Optional + Computed: when vpc_type is "standard", AliCloud creates the VPC
+			// itself and sends back its ID, so there is nothing for the user to set.
+			// Leaving it out of the config keeps the ID the API returns, instead of
+			// replacing the office site on every plan.
 			"vpc_id": schema.StringAttribute{
 				Optional: true,
+				Computed: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 		},
@@ -182,8 +194,10 @@ func (r *ecdSimpleOfficeSiteResource) Create(ctx context.Context, req resource.C
 	}
 
 	// Build request payload
-	params := map[string]string{
-		"CidrBlock": plan.CidrBlock.ValueString(),
+	params := map[string]string{}
+
+	if !plan.CidrBlock.IsNull() && !plan.CidrBlock.IsUnknown() {
+		params["CidrBlock"] = plan.CidrBlock.ValueString()
 	}
 
 	if !plan.VpcId.IsNull() && !plan.VpcId.IsUnknown() {
@@ -471,13 +485,27 @@ func (r *ecdSimpleOfficeSiteResource) waitForOfficeSiteRegistered(id string) map
 }
 
 // populateComputedFields fully refreshes all fields from the API response.
-// Used by Read to sync current remote state.
+// Used by Read to sync current remote state. Every schema attribute the API returns
+// must be assigned here. Leaving them null after an import makes Terraform plan a replacement.
+//
+// CenOwnerId is empty for customized office sites: it is a CreateSimpleOfficeSite request-only
+// parameter and is not part of the DescribeOfficeSites response, so it cannot be
+// read back and stays null after import.
 func populateComputedFields(model *ECDBasicOfficeSiteModel, site map[string]interface{}) {
 	model.Status = types.StringValue(strVal(site, "Status"))
-	// Only overwrite OfficeSiteName if the API returns a non-empty value.
-	// The API can return "" immediately after creation even though a name was set.
-	if name := strVal(site, "OfficeSiteName"); name != "" {
+	// Only overwrite these if the API returns a non-empty value.
+	// The API can return "" immediately after creation even though a value was set.
+	if name := officeSiteName(site); name != "" {
 		model.OfficeSiteName = types.StringValue(name)
+	}
+	if vpcId := strVal(site, "VpcId"); vpcId != "" {
+		model.VpcId = types.StringValue(vpcId)
+	}
+	if cidrBlock := strVal(site, "CidrBlock"); cidrBlock != "" {
+		model.CidrBlock = types.StringValue(cidrBlock)
+	}
+	if cenId := strVal(site, "CenId"); cenId != "" {
+		model.CenId = types.StringValue(cenId)
 	}
 	model.VpcType = types.StringValue(strVal(site, "VpcType"))
 	model.DesktopAccessType = types.StringValue(normalizeDesktopAccessType(strVal(site, "DesktopAccessType")))
@@ -515,7 +543,19 @@ func resolveUnknownFields(model *ECDBasicOfficeSiteModel, site map[string]interf
 	model.Status = types.StringValue(apiVal("Status"))
 
 	if model.OfficeSiteName.IsUnknown() {
-		model.OfficeSiteName = types.StringValue(apiVal("OfficeSiteName"))
+		model.OfficeSiteName = types.StringValue(officeSiteName(site))
+	}
+	// cidr_block is Optional + Computed, so it is unknown when the user leaves it out
+	// of the config. That happens on customized office sites, where AliCloud takes the
+	// CIDR from the VPC.
+	if model.CidrBlock.IsUnknown() {
+		model.CidrBlock = types.StringValue(apiVal("CidrBlock"))
+	}
+	// vpc_id is Optional + Computed, so it is unknown when the user leaves it out of
+	// the config. That happens on standard office sites, where AliCloud creates the
+	// VPC and sends back its ID.
+	if model.VpcId.IsUnknown() {
+		model.VpcId = types.StringValue(apiVal("VpcId"))
 	}
 	if model.VpcType.IsUnknown() {
 		model.VpcType = types.StringValue(apiVal("VpcType"))
@@ -541,6 +581,17 @@ func resolveUnknownFields(model *ECDBasicOfficeSiteModel, site map[string]interf
 	if model.Bandwidth.IsUnknown() {
 		model.Bandwidth = types.Int64Value(apiInt64("Bandwidth"))
 	}
+}
+
+// officeSiteName reads the office site name out of a DescribeOfficeSites entry.
+// The API is asymmetric: CreateSimpleOfficeSite/ModifyOfficeSiteAttribute take
+// "OfficeSiteName", but DescribeOfficeSites returns it as "Name". "OfficeSiteName"
+// is still accepted as a fallback in case the response ever carries both.
+func officeSiteName(site map[string]interface{}) string {
+	if name := strVal(site, "Name"); name != "" {
+		return name
+	}
+	return strVal(site, "OfficeSiteName")
 }
 
 // normalizeDesktopAccessType converts API-returned uppercase values to the
